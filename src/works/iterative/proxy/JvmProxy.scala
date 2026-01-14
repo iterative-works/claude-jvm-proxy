@@ -34,14 +34,20 @@ object ProxyConfig:
   def parse(url: String): Option[ProxyConfig] =
     if !url.contains("@") then None
     else Try {
+      // Format: http://user:pass@host:port
       val afterProtocol = url.split("://", 2)(1)
-      val Array(credsAndHost, portStr) = afterProtocol.split(":(?=[^:]*$)", 2)
-      val port = portStr.toInt
 
-      val atIndex = credsAndHost.lastIndexOf('@')
-      val creds = credsAndHost.substring(0, atIndex)
-      val host = credsAndHost.substring(atIndex + 1)
+      // Split on last colon to get port
+      val lastColon = afterProtocol.lastIndexOf(':')
+      val beforePort = afterProtocol.substring(0, lastColon)
+      val port = afterProtocol.substring(lastColon + 1).toInt
 
+      // Split on last @ to get host vs credentials
+      val atIndex = beforePort.lastIndexOf('@')
+      val creds = beforePort.substring(0, atIndex)
+      val host = beforePort.substring(atIndex + 1)
+
+      // Split credentials on first colon
       val colonIndex = creds.indexOf(':')
       val user = creds.substring(0, colonIndex)
       val pass = creds.substring(colonIndex + 1)
