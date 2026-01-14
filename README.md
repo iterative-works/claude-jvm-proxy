@@ -14,16 +14,37 @@ JVM tools often fail to authenticate with HTTP proxies that require Basic auth f
 JVM Tool -> jvm-proxy (localhost:13130) -> Upstream Proxy (with auth) -> Internet
 ```
 
-## Quick Start (Claude Code)
+## Quick Start (Claude Code on Web)
+
+Run this command first, then all subsequent JVM commands will work:
 
 ```bash
-# Install, start proxy, and set up environment (one command)
+curl -fsSL https://raw.githubusercontent.com/iterative-works/claude-jvm-proxy/main/install.sh | bash
+```
+
+This will:
+1. Download the binary to `~/.local/bin/`
+2. Start the proxy in background
+3. Configure `CLAUDE_ENV_FILE` for persistent environment (if available)
+4. Save environment to `~/.jvm-proxy-env`
+
+**For Claude Code agents**: After running the install, prefix JVM commands with environment sourcing:
+
+```bash
+source ~/.jvm-proxy-env && sbt compile
+source ~/.jvm-proxy-env && scala-cli run .
+```
+
+Or if `CLAUDE_ENV_FILE` is configured, subsequent bash commands will automatically have the environment.
+
+## Quick Start (Local Terminal)
+
+```bash
+# Install, start proxy, and set up environment
 eval "$(curl -fsSL https://raw.githubusercontent.com/iterative-works/claude-jvm-proxy/main/install.sh)"
 
-# JVM tools now work normally
+# JVM tools now work in this shell session
 sbt compile
-scala-cli run .
-cs fetch org.typelevel::cats-core:2.10.0
 ```
 
 ## Manual Installation
@@ -82,6 +103,18 @@ eval "$(./jvm-proxy env)"
 4. Once tunnel is established, data flows bidirectionally
 
 The proxy only handles HTTPS CONNECT tunneling (which is what JVM tools need for Maven Central, etc.).
+
+## Claude Code Environment Persistence
+
+Claude Code runs each bash command in a fresh shell, so environment variables don't persist between commands. The install script handles this by:
+
+1. Writing to `CLAUDE_ENV_FILE` if available (Claude Code sources this before each bash command)
+2. Saving environment to `~/.jvm-proxy-env` for manual sourcing
+
+If you're an agent and environment isn't persisting, prefix commands with:
+```bash
+source ~/.jvm-proxy-env && <your-command>
+```
 
 ## Building from Source
 

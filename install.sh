@@ -7,6 +7,7 @@ set -e
 REPO="iterative-works/claude-jvm-proxy"
 BINARY_NAME="jvm-proxy"
 INSTALL_DIR="${HOME}/.local/bin"
+ENV_FILE="${HOME}/.jvm-proxy-env"
 VERSION="${JVM_PROXY_VERSION:-latest}"
 
 # Detect platform
@@ -51,11 +52,27 @@ else
     echo "Proxy started in background" >&2
 fi
 
-# Output setup commands for eval
-cat <<EOF
-export PATH="${INSTALL_DIR}:\$PATH"
-export JAVA_TOOL_OPTIONS="-Dhttp.proxyHost=127.0.0.1 -Dhttp.proxyPort=13130 -Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=13130"
-EOF
+# Environment setup content
+ENV_SETUP="export PATH=\"${INSTALL_DIR}:\$PATH\"
+export JAVA_TOOL_OPTIONS=\"-Dhttp.proxyHost=127.0.0.1 -Dhttp.proxyPort=13130 -Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=13130\""
+
+# Write to standalone env file for manual sourcing
+echo "$ENV_SETUP" > "$ENV_FILE"
+echo "Environment saved to ${ENV_FILE}" >&2
+
+# If CLAUDE_ENV_FILE exists, append to it for Claude Code persistence
+if [ -n "$CLAUDE_ENV_FILE" ] && [ -f "$CLAUDE_ENV_FILE" ]; then
+    # Check if already configured
+    if ! grep -q "jvm-proxy" "$CLAUDE_ENV_FILE" 2>/dev/null; then
+        echo "" >> "$CLAUDE_ENV_FILE"
+        echo "# jvm-proxy environment" >> "$CLAUDE_ENV_FILE"
+        echo "$ENV_SETUP" >> "$CLAUDE_ENV_FILE"
+        echo "Configured Claude Code environment (CLAUDE_ENV_FILE)" >&2
+    fi
+fi
+
+# Output setup commands for eval (useful outside Claude Code)
+echo "$ENV_SETUP"
 
 echo "" >&2
 echo "Ready. Use sbt, scala-cli, or coursier normally." >&2
