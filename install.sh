@@ -60,8 +60,10 @@ export JAVA_TOOL_OPTIONS=\"-Dhttp.proxyHost=127.0.0.1 -Dhttp.proxyPort=13130 -Dh
 echo "$ENV_SETUP" > "$ENV_FILE"
 echo "Environment saved to ${ENV_FILE}" >&2
 
-# If CLAUDE_ENV_FILE exists, append to it for Claude Code persistence
-if [ -n "$CLAUDE_ENV_FILE" ] && [ -f "$CLAUDE_ENV_FILE" ]; then
+# If CLAUDE_ENV_FILE is set, append to it for Claude Code persistence
+if [ -n "$CLAUDE_ENV_FILE" ]; then
+    # Create file if it doesn't exist
+    touch "$CLAUDE_ENV_FILE"
     # Check if already configured
     if ! grep -q "jvm-proxy" "$CLAUDE_ENV_FILE" 2>/dev/null; then
         echo "" >> "$CLAUDE_ENV_FILE"
