@@ -1,14 +1,36 @@
 #!/bin/bash
-# PURPOSE: Download and set up jvm-proxy for Claude Code environments
-# PURPOSE: Curl-pipeable: curl -fsSL https://raw.githubusercontent.com/iterative-works/claude-jvm-proxy/main/install.sh | bash
+# PURPOSE: Set up JVM build tools to work in Claude Code sandbox environment
+# PURPOSE: Handles proxy authentication and native image limitations
 
 set -e
 
 REPO="iterative-works/claude-jvm-proxy"
-BINARY_NAME="jvm-proxy"
 INSTALL_DIR="${HOME}/.local/bin"
+LIB_DIR="${HOME}/.local/lib"
 ENV_FILE="${HOME}/.jvm-proxy-env"
-VERSION="${JVM_PROXY_VERSION:-latest}"
+SCALA_CLI_VERSION="1.6.1"
+
+# Get upstream proxy URL - try environment first, then GLOBAL_AGENT_HTTP_PROXY
+get_upstream_proxy() {
+    if [ -n "$HTTPS_PROXY" ]; then
+        echo "$HTTPS_PROXY"
+    elif [ -n "$HTTP_PROXY" ]; then
+        echo "$HTTP_PROXY"
+    elif [ -n "$GLOBAL_AGENT_HTTP_PROXY" ]; then
+        echo "$GLOBAL_AGENT_HTTP_PROXY"
+    else
+        echo ""
+    fi
+}
+
+UPSTREAM_PROXY=$(get_upstream_proxy)
+
+if [ -z "$UPSTREAM_PROXY" ]; then
+    echo "Error: No proxy URL found in HTTPS_PROXY, HTTP_PROXY, or GLOBAL_AGENT_HTTP_PROXY" >&2
+    exit 1
+fi
+
+echo "Using upstream proxy: ${UPSTREAM_PROXY%%@*}@..." >&2
 
 # Detect platform
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
@@ -26,55 +48,86 @@ case "$OS" in
     *) echo "Unsupported OS: $OS" >&2; exit 1 ;;
 esac
 
-# Get download URL
-if [ "$VERSION" = "latest" ]; then
-    DOWNLOAD_URL="https://github.com/${REPO}/releases/latest/download/${BINARY_NAME}-${PLATFORM}"
-else
-    DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${VERSION}/${BINARY_NAME}-${PLATFORM}"
-fi
+# Create directories
+mkdir -p "$INSTALL_DIR" "$LIB_DIR"
 
-# Create install directory
-mkdir -p "$INSTALL_DIR"
+# Download jvm-proxy binary (using upstream proxy directly)
+echo "Downloading jvm-proxy..." >&2
+JVM_PROXY_URL="https://github.com/${REPO}/releases/latest/download/jvm-proxy-${PLATFORM}"
+curl -x "$UPSTREAM_PROXY" -fsSL "$JVM_PROXY_URL" -o "${INSTALL_DIR}/jvm-proxy"
+chmod +x "${INSTALL_DIR}/jvm-proxy"
 
-echo "Downloading jvm-proxy for ${PLATFORM}..." >&2
-curl -fsSL "$DOWNLOAD_URL" -o "${INSTALL_DIR}/${BINARY_NAME}"
-chmod +x "${INSTALL_DIR}/${BINARY_NAME}"
-
-echo "Installed to ${INSTALL_DIR}/${BINARY_NAME}" >&2
-
-# Start proxy in background if not already running
-if "${INSTALL_DIR}/${BINARY_NAME}" status 2>/dev/null | grep -q "running"; then
+# Start jvm-proxy with explicit upstream (since native images can't read env vars in sandbox)
+if "${INSTALL_DIR}/jvm-proxy" status 2>/dev/null | grep -q "running"; then
     echo "Proxy already running" >&2
 else
-    "${INSTALL_DIR}/${BINARY_NAME}" start &>/dev/null &
+    "${INSTALL_DIR}/jvm-proxy" start --upstream "$UPSTREAM_PROXY" &>/dev/null &
     disown 2>/dev/null || true
     sleep 0.5
-    echo "Proxy started in background" >&2
+    echo "Proxy started on localhost:13130" >&2
 fi
 
-# Environment setup content
-ENV_SETUP="export PATH=\"${INSTALL_DIR}:\$PATH\"
-export JAVA_TOOL_OPTIONS=\"-Dhttp.proxyHost=127.0.0.1 -Dhttp.proxyPort=13130 -Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=13130\""
+# Download scala-cli JAR version (native image has SSL/proxy issues in sandbox)
+echo "Downloading scala-cli JAR..." >&2
+SCALA_CLI_JAR="${LIB_DIR}/scala-cli.jar"
+SCALA_CLI_URL="https://github.com/VirtusLab/scala-cli/releases/download/v${SCALA_CLI_VERSION}/scala-cli.jar"
 
-# Write to standalone env file for manual sourcing
-echo "$ENV_SETUP" > "$ENV_FILE"
+# Use curl with local proxy for download
+curl -x http://127.0.0.1:13130 -fsSL "$SCALA_CLI_URL" -o "$SCALA_CLI_JAR"
+
+# Create scala-cli wrapper script
+cat > "${INSTALL_DIR}/scala-cli" << 'WRAPPER'
+#!/bin/bash
+# Wrapper for scala-cli that uses JVM version with proxy settings
+exec java \
+    -Dhttp.proxyHost=127.0.0.1 -Dhttp.proxyPort=13130 \
+    -Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=13130 \
+    -jar ~/.local/lib/scala-cli.jar \
+    --server=false --jvm system "$@"
+WRAPPER
+chmod +x "${INSTALL_DIR}/scala-cli"
+
+# Create cs (coursier) wrapper - uses scala-cli's coursier internally
+cat > "${INSTALL_DIR}/cs" << 'WRAPPER'
+#!/bin/bash
+# Wrapper for coursier that uses JVM version with proxy settings
+exec java \
+    -Dhttp.proxyHost=127.0.0.1 -Dhttp.proxyPort=13130 \
+    -Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=13130 \
+    -jar ~/.local/lib/scala-cli.jar \
+    --power --server=false --jvm system \
+    shim coursier "$@"
+WRAPPER
+chmod +x "${INSTALL_DIR}/cs"
+
+# Write environment file
+cat > "$ENV_FILE" << EOF
+export PATH="${INSTALL_DIR}:\$PATH"
+export JAVA_TOOL_OPTIONS="-Dhttp.proxyHost=127.0.0.1 -Dhttp.proxyPort=13130 -Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=13130"
+export SBT_OPTS="-Dhttp.proxyHost=127.0.0.1 -Dhttp.proxyPort=13130 -Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=13130"
+EOF
+
 echo "Environment saved to ${ENV_FILE}" >&2
 
 # If CLAUDE_ENV_FILE is set, append to it for Claude Code persistence
 if [ -n "$CLAUDE_ENV_FILE" ]; then
-    # Create file if it doesn't exist
     touch "$CLAUDE_ENV_FILE"
-    # Check if already configured
     if ! grep -q "jvm-proxy" "$CLAUDE_ENV_FILE" 2>/dev/null; then
         echo "" >> "$CLAUDE_ENV_FILE"
         echo "# jvm-proxy environment" >> "$CLAUDE_ENV_FILE"
-        echo "$ENV_SETUP" >> "$CLAUDE_ENV_FILE"
-        echo "Configured Claude Code environment (CLAUDE_ENV_FILE)" >&2
+        cat "$ENV_FILE" >> "$CLAUDE_ENV_FILE"
+        echo "Configured CLAUDE_ENV_FILE for persistence" >&2
     fi
 fi
 
-# Output setup commands for eval (useful outside Claude Code)
-echo "$ENV_SETUP"
+# Output for eval
+cat "$ENV_FILE"
 
 echo "" >&2
-echo "Ready. Use sbt, scala-cli, or coursier normally." >&2
+echo "Setup complete. Tools available:" >&2
+echo "  - scala-cli (JVM wrapper with proxy)" >&2
+echo "  - cs (coursier via scala-cli)" >&2
+echo "  - sbt (uses JAVA_TOOL_OPTIONS)" >&2
+echo "  - mill (uses JAVA_TOOL_OPTIONS)" >&2
+echo "" >&2
+echo "Usage: source ~/.jvm-proxy-env && sbt compile" >&2

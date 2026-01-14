@@ -12,7 +12,7 @@ import scala.util.control.NonFatal
 import scala.scalanative.posix.unistd.getpid
 import scala.scalanative.posix.signal.{kill, SIGTERM}
 
-/** Upstream proxy configuration parsed from environment. */
+/** Upstream proxy configuration. */
 case class ProxyConfig(
     host: String,
     port: Int,
@@ -227,35 +227,45 @@ class ProxyServer(port: Int, config: ProxyConfig):
     Try(Files.deleteIfExists(pidFile))
     if server != null then Try(server.close())
 
+/** Parsed command-line arguments. */
+case class Args(
+    command: String = "",
+    port: Int = 13130,
+    upstream: Option[String] = None
+)
+
+object Args:
+  def parse(args: Array[String]): Args =
+    var result = Args()
+    var i = 0
+    while i < args.length do
+      args(i) match
+        case "-p" | "--port" if i + 1 < args.length =>
+          result = result.copy(port = args(i + 1).toInt)
+          i += 2
+        case "-u" | "--upstream" if i + 1 < args.length =>
+          result = result.copy(upstream = Some(args(i + 1)))
+          i += 2
+        case arg if !arg.startsWith("-") && result.command.isEmpty =>
+          result = result.copy(command = arg)
+          i += 1
+        case _ =>
+          i += 1
+    result
+
 /** Command-line interface. */
 object JvmProxy:
   val DefaultPort = 13130
 
   def main(args: Array[String]): Unit =
-    val (command, port) = parseArgs(args)
+    val parsed = Args.parse(args)
 
-    command match
-      case "start"  => cmdStart(port)
-      case "stop"   => cmdStop(port)
-      case "status" => cmdStatus(port)
-      case "env"    => cmdEnv(port)
+    parsed.command match
+      case "start"  => cmdStart(parsed)
+      case "stop"   => cmdStop(parsed.port)
+      case "status" => cmdStatus(parsed.port)
+      case "env"    => cmdEnv(parsed.port)
       case _        => printUsage()
-
-  private def parseArgs(args: Array[String]): (String, Int) =
-    var command = ""
-    var port = DefaultPort
-    var i = 0
-    while i < args.length do
-      args(i) match
-        case "-p" | "--port" if i + 1 < args.length =>
-          port = args(i + 1).toInt
-          i += 2
-        case arg if !arg.startsWith("-") && command.isEmpty =>
-          command = arg
-          i += 1
-        case _ =>
-          i += 1
-    (command, port)
 
   private def getPid(port: Int): Option[Int] =
     val pidFile = Paths.get(s"/tmp/jvm-proxy-$port.pid")
@@ -265,18 +275,23 @@ object JvmProxy:
       else None
     }.toOption.flatten
 
-  private def cmdStart(port: Int): Unit =
-    getPid(port) match
+  private def getConfig(args: Args): Option[ProxyConfig] =
+    // Priority: --upstream flag > environment variables
+    args.upstream.flatMap(ProxyConfig.parse).orElse(ProxyConfig.fromEnv())
+
+  private def cmdStart(args: Args): Unit =
+    getPid(args.port) match
       case Some(_) =>
-        System.err.println(s"Proxy already running on port $port")
+        System.err.println(s"Proxy already running on port ${args.port}")
         sys.exit(1)
       case None =>
-        ProxyConfig.fromEnv() match
+        getConfig(args) match
           case None =>
-            System.err.println("Error: No HTTP_PROXY/HTTPS_PROXY configured in environment")
+            System.err.println("Error: No upstream proxy configured")
+            System.err.println("Use --upstream http://user:pass@host:port or set HTTP_PROXY/HTTPS_PROXY")
             sys.exit(1)
           case Some(config) =>
-            val server = new ProxyServer(port, config)
+            val server = new ProxyServer(args.port, config)
             server.start()
 
   private def cmdStop(port: Int): Unit =
@@ -298,17 +313,29 @@ object JvmProxy:
     println(s"""export JAVA_TOOL_OPTIONS="-Dhttp.proxyHost=127.0.0.1 -Dhttp.proxyPort=$port -Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=$port"""")
 
   private def printUsage(): Unit =
-    System.err.println("""Usage: jvm-proxy <command> [--port PORT]
-      |
-      |Commands:
-      |  start   Start the proxy (default port: 13130)
-      |  stop    Stop the proxy
-      |  status  Check if proxy is running
-      |  env     Print environment variables to set
-      |
-      |Example:
-      |  eval $(jvm-proxy env)
-      |  jvm-proxy start &
-      |  sbt compile
-      |""".stripMargin)
+    System.err.println("""Usage: jvm-proxy <command> [options]
+
+Commands:
+  start   Start the proxy server
+  stop    Stop the running proxy
+  status  Check if proxy is running
+  env     Print environment variables for JVM tools
+
+Options:
+  -p, --port PORT           Listen port (default: 13130)
+  -u, --upstream URL        Upstream proxy URL: http://user:pass@host:port
+                            (falls back to HTTP_PROXY/HTTPS_PROXY env vars)
+
+Examples:
+  # Using environment variables
+  export HTTPS_PROXY=http://user:pass@proxy:8080
+  jvm-proxy start &
+
+  # Using explicit upstream (for environments where env vars don't work)
+  jvm-proxy start --upstream http://user:pass@proxy:8080 &
+
+  # Configure JVM tools
+  eval $(jvm-proxy env)
+  sbt compile
+""")
     sys.exit(1)

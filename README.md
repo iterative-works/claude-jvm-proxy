@@ -1,83 +1,90 @@
 # jvm-proxy
 
-A local HTTP proxy that enables JVM tools (sbt, scala-cli, coursier) to work with authenticated HTTP proxies.
+A local HTTP proxy that enables JVM build tools (sbt, scala-cli, coursier, mill) to work in environments with authenticated HTTP proxies, such as Claude Code sandbox.
 
 ## Problem
 
-JVM tools often fail to authenticate with HTTP proxies that require Basic auth for HTTPS tunneling. This is particularly problematic in environments like Claude Code on web, where traffic goes through an authenticated proxy.
+In Claude Code sandbox:
+1. Traffic must go through an authenticated HTTP proxy
+2. Native image tools (scala-cli, coursier) can't read environment variables due to sandbox restrictions
+3. Native images have embedded SSL certificates that don't include the sandbox's TLS inspection CA
 
 ## Solution
 
-`jvm-proxy` runs locally, accepts unauthenticated connections from JVM tools, and forwards them to the upstream proxy with proper authentication headers.
+`jvm-proxy` runs locally, accepts unauthenticated connections from JVM tools, and forwards them to the upstream proxy with authentication. The install script also provides JVM-based wrappers for scala-cli that bypass the native image limitations.
 
 ```
 JVM Tool -> jvm-proxy (localhost:13130) -> Upstream Proxy (with auth) -> Internet
 ```
 
-## Quick Start (Claude Code on Web)
-
-Run this command first, then all subsequent JVM commands will work:
+## Quick Start (Claude Code Sandbox)
 
 ```bash
+# One-time setup (run this first in your session)
 curl -fsSL https://raw.githubusercontent.com/iterative-works/claude-jvm-proxy/main/install.sh | bash
-```
 
-This will:
-1. Download the binary to `~/.local/bin/`
-2. Start the proxy in background
-3. Configure `CLAUDE_ENV_FILE` for persistent environment (if available)
-4. Save environment to `~/.jvm-proxy-env`
-
-**For Claude Code agents**: After running the install, prefix JVM commands with environment sourcing:
-
-```bash
+# Then for each command, source the environment:
 source ~/.jvm-proxy-env && sbt compile
 source ~/.jvm-proxy-env && scala-cli run .
+source ~/.jvm-proxy-env && mill compile
 ```
 
-Or if `CLAUDE_ENV_FILE` is configured, subsequent bash commands will automatically have the environment.
+The install script will:
+1. Download and start `jvm-proxy` with the upstream proxy URL
+2. Download scala-cli JAR version (bypasses native image issues)
+3. Create wrapper scripts for `scala-cli` and `cs`
+4. Set up `JAVA_TOOL_OPTIONS` and `SBT_OPTS` for sbt/mill
 
-## Quick Start (Local Terminal)
+### Environment Persistence
+
+If you set `CLAUDE_ENV_FILE` in your Claude Code settings, the environment will persist across bash commands:
+
+```
+CLAUDE_ENV_FILE=/tmp/claude-env.sh
+```
+
+Then after running install once, subsequent commands work without `source`:
+```bash
+sbt compile  # just works
+```
+
+## Tool Support
+
+| Tool | Method | Notes |
+|------|--------|-------|
+| sbt | `JAVA_TOOL_OPTIONS` | Works directly after sourcing env |
+| mill | `JAVA_TOOL_OPTIONS` | Works directly after sourcing env |
+| scala-cli | JVM wrapper | Uses JAR version, not native image |
+| coursier (cs) | JVM wrapper | Via scala-cli shim |
+
+## Local Usage (outside sandbox)
 
 ```bash
-# Install, start proxy, and set up environment
+# If you have proxy env vars set
 eval "$(curl -fsSL https://raw.githubusercontent.com/iterative-works/claude-jvm-proxy/main/install.sh)"
-
-# JVM tools now work in this shell session
 sbt compile
 ```
 
-## Manual Installation
-
-Download the binary for your platform from [releases](https://github.com/iterative-works/claude-jvm-proxy/releases):
+## Manual Usage
 
 ```bash
-# Linux x86_64
-curl -fsSL https://github.com/iterative-works/claude-jvm-proxy/releases/latest/download/jvm-proxy-linux-x86_64 -o jvm-proxy
-chmod +x jvm-proxy
-```
+# Start with explicit upstream proxy
+./jvm-proxy start --upstream http://user:pass@proxy:8080 &
 
-## Usage
-
-```bash
-# Start proxy (reads HTTPS_PROXY/HTTP_PROXY from environment)
+# Or using environment variables (if they work in your environment)
+export HTTPS_PROXY=http://user:pass@proxy:8080
 ./jvm-proxy start &
 
-# Configure JVM tools to use local proxy
-eval "$(./jvm-proxy env)"
-
-# Check status
-./jvm-proxy status
-
-# Stop proxy
-./jvm-proxy stop
+# Configure JVM tools
+eval $(./jvm-proxy env)
+sbt compile
 ```
 
 ### Commands
 
 | Command | Description |
 |---------|-------------|
-| `start` | Start the proxy server (default port: 13130) |
+| `start` | Start the proxy server |
 | `stop` | Stop the running proxy |
 | `status` | Check if proxy is running |
 | `env` | Print environment variables for JVM tools |
@@ -86,43 +93,36 @@ eval "$(./jvm-proxy env)"
 
 | Option | Description |
 |--------|-------------|
-| `-p, --port PORT` | Use custom port (default: 13130) |
-
-## Requirements
-
-- `HTTPS_PROXY` or `HTTP_PROXY` environment variable set with credentials:
-  ```
-  export HTTPS_PROXY=http://user:password@proxy.example.com:8080
-  ```
+| `-p, --port PORT` | Listen port (default: 13130) |
+| `-u, --upstream URL` | Upstream proxy: `http://user:pass@host:port` |
 
 ## How It Works
 
-1. JVM tools connect to `localhost:13130`
-2. `jvm-proxy` receives the CONNECT request
-3. It connects to the upstream proxy with Basic auth header
-4. Once tunnel is established, data flows bidirectionally
-
-The proxy only handles HTTPS CONNECT tunneling (which is what JVM tools need for Maven Central, etc.).
-
-## Claude Code Environment Persistence
-
-Claude Code runs each bash command in a fresh shell, so environment variables don't persist between commands. The install script handles this by:
-
-1. Writing to `CLAUDE_ENV_FILE` if available (Claude Code sources this before each bash command)
-2. Saving environment to `~/.jvm-proxy-env` for manual sourcing
-
-If you're an agent and environment isn't persisting, prefix commands with:
-```bash
-source ~/.jvm-proxy-env && <your-command>
-```
+1. Install script captures proxy URL from environment (bash can read env vars)
+2. `jvm-proxy` starts with explicit `--upstream` flag (bypasses native image env var issue)
+3. JVM tools connect to `localhost:13130` (no auth needed)
+4. `jvm-proxy` forwards to upstream with `Proxy-Authorization` header
+5. JVM reads system truststore which has the TLS inspection CA
 
 ## Building from Source
 
 Requires [scala-cli](https://scala-cli.virtuslab.org/):
 
 ```bash
+# Debug build
 scala-cli --power package --native . -o jvm-proxy
+
+# Release build
+scala-cli --power package --native . -o jvm-proxy --native-mode release-fast
+strip jvm-proxy
 ```
+
+## Technical Details
+
+- Built with Scala Native 0.5.9 for fast startup and small binary
+- Uses POSIX APIs for process management
+- Bidirectional streaming with thread-per-direction (no buffering)
+- Only handles HTTPS CONNECT tunneling (what JVM tools need for Maven Central)
 
 ## License
 
