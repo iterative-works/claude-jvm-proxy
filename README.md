@@ -17,13 +17,10 @@ JVM Tool -> jvm-proxy (localhost:13130) -> Upstream Proxy (with auth) -> Interne
 ## Quick Start (Claude Code)
 
 ```bash
-# Install and set up environment
+# Install, start proxy, and set up environment (one command)
 eval "$(curl -fsSL https://raw.githubusercontent.com/iterative-works/claude-jvm-proxy/main/install.sh)"
 
-# Start the proxy in background
-jvm-proxy start &
-
-# Now JVM tools work normally
+# JVM tools now work normally
 sbt compile
 scala-cli run .
 cs fetch org.typelevel::cats-core:2.10.0

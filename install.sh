@@ -41,6 +41,16 @@ chmod +x "${INSTALL_DIR}/${BINARY_NAME}"
 
 echo "Installed to ${INSTALL_DIR}/${BINARY_NAME}" >&2
 
+# Start proxy in background if not already running
+if "${INSTALL_DIR}/${BINARY_NAME}" status 2>/dev/null | grep -q "running"; then
+    echo "Proxy already running" >&2
+else
+    "${INSTALL_DIR}/${BINARY_NAME}" start &>/dev/null &
+    disown 2>/dev/null || true
+    sleep 0.5
+    echo "Proxy started in background" >&2
+fi
+
 # Output setup commands for eval
 cat <<EOF
 export PATH="${INSTALL_DIR}:\$PATH"
@@ -48,5 +58,4 @@ export JAVA_TOOL_OPTIONS="-Dhttp.proxyHost=127.0.0.1 -Dhttp.proxyPort=13130 -Dht
 EOF
 
 echo "" >&2
-echo "Run: ${INSTALL_DIR}/${BINARY_NAME} start &" >&2
-echo "Then use sbt, scala-cli, or coursier normally." >&2
+echo "Ready. Use sbt, scala-cli, or coursier normally." >&2
