@@ -1,0 +1,16 @@
+# Scala CLI build artifacts
+.scala-build/
+.bsp/
+
+# Native binary
+jvm-proxy
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.metals/
+.bloop/
+
+# OS
+.DS_Store
