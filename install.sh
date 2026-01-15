@@ -58,7 +58,7 @@ curl -x "$UPSTREAM_PROXY" -fsSL "$JVM_PROXY_URL" -o "${INSTALL_DIR}/jvm-proxy"
 chmod +x "${INSTALL_DIR}/jvm-proxy"
 
 # Start jvm-proxy with explicit upstream (since native images can't read env vars in sandbox)
-if "${INSTALL_DIR}/jvm-proxy" status 2>/dev/null | grep -q "running"; then
+if "${INSTALL_DIR}/jvm-proxy" status 2>/dev/null | grep -q "^Proxy running"; then
     echo "Proxy already running" >&2
 else
     "${INSTALL_DIR}/jvm-proxy" start --upstream "$UPSTREAM_PROXY" &>/dev/null &
